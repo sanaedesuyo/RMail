@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target/
+
+# Tauri build artifacts
+/src-tauri/target/
+/src-tauri/gen/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local logs and temporary files
+*.log
+*.tmp
