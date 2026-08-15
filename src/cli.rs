@@ -1,11 +1,13 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use zeroize::Zeroizing;
 
 use crate::account::{DiscoveryMethod, MailServer, TransportSecurity};
 use crate::key_store::OsKeyStore;
+use crate::mail::{Attachment, EmailAddress, EmailDraft, MessagePriority};
+use crate::mail_service::{MailService, ReceiveProtocol, ServerOverride};
 use crate::server::{DiscoveredServers, discover};
 use crate::service::AccountService;
 use crate::storage::{AccountRepository, DataPaths};
@@ -26,6 +28,96 @@ pub struct Cli {
 pub enum Command {
     /// 管理加密的用户配置。
     Config(ConfigArgs),
+    /// 通过已配置账号安全发送邮件。
+    Send(Box<SendArgs>),
+    /// 从 IMAP 或 POP3 邮箱接收邮件；默认仅下载邮件头。
+    Receive(ReceiveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SendArgs {
+    #[arg(long)]
+    pub account: String,
+    #[arg(long, required = true, value_delimiter = ',')]
+    pub to: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub cc: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub bcc: Vec<String>,
+    #[arg(long)]
+    pub subject: String,
+    /// 正文文件。避免把敏感正文放入 shell 历史记录。
+    #[arg(long, value_name = "PATH")]
+    pub text_file: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub html_file: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub attachment: Vec<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub inline_attachment: Vec<PathBuf>,
+    #[arg(long)]
+    pub reply_to: Option<String>,
+    #[arg(long)]
+    pub in_reply_to: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub reference: Vec<String>,
+    #[arg(long)]
+    pub smtp_server: Option<String>,
+    #[arg(long)]
+    pub smtp_port: Option<u16>,
+    #[arg(long, value_enum)]
+    pub smtp_security: Option<SecurityArg>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReceiveArgs {
+    #[arg(long)]
+    pub account: String,
+    #[arg(long, value_enum, default_value_t = ReceiveProtocolArg::Imap)]
+    pub protocol: ReceiveProtocolArg,
+    /// POP3 必填；IMAP 不填时使用账号配置中的服务器。
+    #[arg(long)]
+    pub server: Option<String>,
+    #[arg(long)]
+    pub port: Option<u16>,
+    #[arg(long, value_enum)]
+    pub security: Option<SecurityArg>,
+    #[arg(long, default_value = "INBOX")]
+    pub mailbox: String,
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+    /// 下载正文和附件到内存；不会将其持久化。
+    #[arg(long)]
+    pub full: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SecurityArg {
+    Tls,
+    Starttls,
+}
+impl From<SecurityArg> for TransportSecurity {
+    fn from(value: SecurityArg) -> Self {
+        match value {
+            SecurityArg::Tls => Self::Tls,
+            SecurityArg::Starttls => Self::StartTls,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ReceiveProtocolArg {
+    #[default]
+    Imap,
+    Pop3,
+}
+impl From<ReceiveProtocolArg> for ReceiveProtocol {
+    fn from(value: ReceiveProtocolArg) -> Self {
+        match value {
+            ReceiveProtocolArg::Imap => Self::Imap,
+            ReceiveProtocolArg::Pop3 => Self::Pop3,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -66,7 +158,102 @@ pub fn run(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
+        Command::Send(args) => send_mail(&repository, *args),
+        Command::Receive(args) => receive_mail(&repository, args),
     }
+}
+
+fn send_mail(repository: &AccountRepository<OsKeyStore>, args: SendArgs) -> Result<()> {
+    let draft = EmailDraft {
+        from: EmailAddress::new(None, repository.load(&args.account)?.email().to_owned())?,
+        to: parse_addresses(args.to)?,
+        cc: parse_addresses(args.cc)?,
+        bcc: parse_addresses(args.bcc)?,
+        reply_to: args
+            .reply_to
+            .map(|value| EmailAddress::new(None, value))
+            .transpose()?,
+        subject: args.subject,
+        text_body: read_optional_secret_file(args.text_file)?,
+        html_body: read_optional_secret_file(args.html_file)?,
+        attachments: read_attachments(args.attachment, false)?,
+        in_reply_to: args.in_reply_to,
+        references: args.reference,
+        priority: MessagePriority::Normal,
+    };
+    let mut attachments = draft.attachments;
+    attachments.extend(read_attachments(args.inline_attachment, true)?);
+    let draft = EmailDraft {
+        attachments,
+        ..draft
+    };
+    MailService::new(repository).send(
+        &args.account,
+        ServerOverride {
+            host: args.smtp_server,
+            port: args.smtp_port,
+            security: args.smtp_security.map(Into::into),
+        },
+        &draft,
+    )?;
+    println!("邮件已由 SMTP 服务器接受。");
+    Ok(())
+}
+
+fn receive_mail(repository: &AccountRepository<OsKeyStore>, args: ReceiveArgs) -> Result<()> {
+    let messages = MailService::new(repository).receive(
+        &args.account,
+        args.protocol.into(),
+        ServerOverride {
+            host: args.server,
+            port: args.port,
+            security: args.security.map(Into::into),
+        },
+        args.mailbox,
+        args.limit,
+        args.full,
+    )?;
+    for message in messages {
+        println!(
+            "来源：{:?}\n主题：{}\n发件人：{}\n大小：{}\n",
+            message.source,
+            message.envelope.subject.unwrap_or_default(),
+            message
+                .envelope
+                .from
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            message.size.unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn parse_addresses(values: Vec<String>) -> Result<Vec<EmailAddress>> {
+    values
+        .into_iter()
+        .map(|value| EmailAddress::new(None, value))
+        .collect()
+}
+fn read_optional_secret_file(path: Option<PathBuf>) -> Result<Option<Zeroizing<String>>> {
+    path.map(|path| {
+        std::fs::read_to_string(&path)
+            .map(Zeroizing::new)
+            .map_err(|source| RMailError::Io {
+                action: "读取正文文件",
+                path,
+                source,
+            })
+    })
+    .transpose()
+}
+fn read_attachments(paths: Vec<PathBuf>, inline: bool) -> Result<Vec<Attachment>> {
+    paths
+        .iter()
+        .map(|path| Attachment::from_path(path, inline))
+        .collect()
 }
 
 fn add_account(repository: &AccountRepository<OsKeyStore>) -> Result<()> {
@@ -217,6 +404,41 @@ mod tests {
                 "config",
                 "show",
                 "94450d7f-6a4a-4cf4-b562-ae567104c425"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn parses_send_and_receive_commands_without_password_arguments() {
+        assert!(
+            Cli::try_parse_from([
+                "RMail",
+                "send",
+                "--account",
+                "profile",
+                "--to",
+                "bob@example.com",
+                "--subject",
+                "Hello",
+                "--text-file",
+                "body.txt",
+                "--smtp-security",
+                "tls"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "RMail",
+                "receive",
+                "--account",
+                "profile",
+                "--protocol",
+                "pop3",
+                "--server",
+                "pop.example.com",
+                "--full"
             ])
             .is_ok()
         );

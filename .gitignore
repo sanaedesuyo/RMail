@@ -24,3 +24,4 @@ desktop.ini
 # Local logs and temporary files
 *.log
 *.tmp
+/.cargo-direct

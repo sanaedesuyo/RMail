@@ -30,7 +30,7 @@ jobs:
 
       - name: Install Linux Secret Service build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libssl-dev pkg-config
 
       - name: Check formatting
         run: cargo fmt --all -- --check
