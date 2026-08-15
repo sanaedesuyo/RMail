@@ -169,6 +169,38 @@ impl<K: KeyStore> AccountRepository<K> {
         Ok(account)
     }
 
+    /// 使用原有的系统凭据库密钥原子替换加密账号配置。
+    pub fn replace(&self, account: &AccountConfig) -> Result<()> {
+        validate_profile_id(&account.profile_id)?;
+        let destination = self.paths.account_file(&account.profile_id)?;
+        if !destination.is_file() {
+            return Err(RMailError::ProfileNotFound(account.profile_id.clone()));
+        }
+        let mut key = self.key_store.load_key(&account.profile_id)?;
+        let plaintext = Zeroizing::new(toml::to_string(&AccountDocumentRef::from(account))?);
+        let envelope = crypto::seal(&account.profile_id, plaintext.as_bytes(), &key)?;
+        key.zeroize();
+        let document = toml::to_string_pretty(&envelope)?;
+        write_private_atomic(&destination, document.as_bytes())
+    }
+
+    /// 删除加密配置文件，并随后删除对应的系统凭据库密钥。
+    ///
+    /// 若系统凭据库删除失败，账号文件已不再存在，遗留密钥不包含邮件或凭据数据。
+    pub fn delete(&self, profile_id: &str) -> Result<()> {
+        validate_profile_id(profile_id)?;
+        let path = self.paths.account_file(profile_id)?;
+        if !path.is_file() {
+            return Err(RMailError::ProfileNotFound(profile_id.to_owned()));
+        }
+        fs::remove_file(&path).map_err(|source| RMailError::Io {
+            action: "删除加密账号配置",
+            path,
+            source,
+        })?;
+        self.key_store.delete_key(profile_id)
+    }
+
     pub fn list_profile_ids(&self) -> Result<Vec<String>> {
         self.paths.ensure()?;
         let entries = fs::read_dir(&self.paths.accounts).map_err(|source| RMailError::Io {
@@ -425,6 +457,40 @@ mod tests {
             repository.resolve_profile(None),
             Err(RMailError::AmbiguousProfile)
         ));
+    }
+
+    #[test]
+    fn replaces_and_deletes_account_with_its_key() {
+        let temporary = TempDir::new().expect("temp dir");
+        let paths = DataPaths::from_root(temporary.path().join("RMail"));
+        let store = MemoryKeyStore::default();
+        let repository = AccountRepository::new(paths.clone(), store.clone());
+        let profile_id = Uuid::new_v4().to_string();
+        repository
+            .save(&account(&profile_id))
+            .expect("save account");
+
+        let updated = AccountConfig::new(
+            profile_id.clone(),
+            "new-address@example.com".into(),
+            "new application password".into(),
+            MailServer::new("imap.example.com".into(), 993, TransportSecurity::Tls)
+                .expect("incoming"),
+            MailServer::new("smtp.example.com".into(), 465, TransportSecurity::Tls)
+                .expect("outgoing"),
+            DiscoveryMethod::Manual,
+        )
+        .expect("updated account");
+        repository.replace(&updated).expect("replace account");
+        assert_eq!(
+            repository.load(&profile_id).expect("load").email(),
+            "new-address@example.com"
+        );
+
+        repository.delete(&profile_id).expect("delete account");
+        assert!(!paths.account_file(&profile_id).expect("path").exists());
+        assert!(repository.load(&profile_id).is_err());
+        assert!(store.load_key(&profile_id).is_err());
     }
 
     #[cfg(unix)]

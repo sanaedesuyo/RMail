@@ -6,6 +6,8 @@ RMail 是一个以安全、跨平台和简洁体验为目标的邮件客户端�
 
 ```text
 cargo run -- config add
+cargo run -- config update <配置ID>
+cargo run -- config delete <配置ID>
 cargo run -- config list
 cargo run -- config show [配置ID]
 cargo run -- config path
@@ -42,6 +44,8 @@ RMail/
 - Linux：Secret Service
 
 若系统安全凭据库不可用，RMail 会明确报错，不会降级为明文或把密钥写到配置目录。`config list` 和 `config show` 会在内存中解密配置，但绝不向终端显示密码。
+
+`config update <配置ID>` 以交互式方式更新邮箱地址、密码或 IMAP/SMTP 服务器，未填写的字段保持原值，并使用原系统密钥重新加密配置。`config delete <配置ID>` 会要求再次输入完整配置 ID；确认后删除加密账号文件及其操作系统凭据库密钥。
 
 ## SMTP 发送与 IMAP/POP3 接收
 
