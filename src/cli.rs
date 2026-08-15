@@ -130,6 +130,16 @@ pub struct ConfigArgs {
 pub enum ConfigAction {
     /// 交互式添加邮箱账号。
     Add,
+    /// 交互式更新账号信息；留空的字段保持不变。
+    Update {
+        /// 要更新的配置 ID。
+        profile_id: String,
+    },
+    /// 删除账号配置及其系统凭据库密钥；需要二次确认。
+    Delete {
+        /// 要删除的配置 ID。
+        profile_id: String,
+    },
     /// 解密并列出已保存账号；不会显示密码。
     List,
     /// 解密并显示一个账号；不会显示密码。
@@ -151,6 +161,8 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Config(config) => match config.action {
             ConfigAction::Add => add_account(&repository),
+            ConfigAction::Update { profile_id } => update_account(&repository, &profile_id),
+            ConfigAction::Delete { profile_id } => delete_account(&repository, &profile_id),
             ConfigAction::List => list_accounts(&repository),
             ConfigAction::Show { profile_id } => show_account(&repository, profile_id.as_deref()),
             ConfigAction::Path => {
@@ -282,6 +294,52 @@ fn add_account(repository: &AccountRepository<OsKeyStore>) -> Result<()> {
     Ok(())
 }
 
+fn update_account(repository: &AccountRepository<OsKeyStore>, profile_id: &str) -> Result<()> {
+    let current = repository.load(profile_id)?;
+    println!("正在更新账号 {}（留空表示保持原值）。", current.email());
+    let email = optional_prompt_line("新邮箱地址：")?;
+    let password = Zeroizing::new(
+        rpassword::prompt_password("新邮箱密码或应用专用密码（留空保持原值，不会回显）：")
+            .map_err(RMailError::Input)?,
+    );
+    let password = (!password.is_empty()).then_some(password);
+    let change_servers = prompt_line("更新 IMAP/SMTP 服务器配置？[y/N]：")?;
+    let (incoming, outgoing, discovery) = match change_servers.to_ascii_lowercase().as_str() {
+        "" | "n" | "no" => (None, None, None),
+        "y" | "yes" => {
+            let incoming = prompt_server("IMAP", current.incoming().port)?;
+            let outgoing = prompt_server("SMTP", current.outgoing().port)?;
+            (
+                Some(incoming),
+                Some(outgoing),
+                Some(DiscoveryMethod::Manual),
+            )
+        }
+        _ => return Err(RMailError::InvalidChoice("请输入 Y 或 N")),
+    };
+    AccountService::new(repository)
+        .update(profile_id, email, password, incoming, outgoing, discovery)?;
+    println!("账号配置已更新并重新加密保存。");
+    Ok(())
+}
+
+fn delete_account(repository: &AccountRepository<OsKeyStore>, profile_id: &str) -> Result<()> {
+    let account = repository.load(profile_id)?;
+    println!(
+        "将删除账号 {} 的加密配置和系统凭据库密钥。",
+        account.email()
+    );
+    let confirmation = prompt_line(&format!("请输入配置 ID {profile_id} 以确认删除："))?;
+    if confirmation != profile_id {
+        return Err(RMailError::InvalidChoice(
+            "确认的配置 ID 不匹配，已取消删除",
+        ));
+    }
+    AccountService::new(repository).delete(profile_id)?;
+    println!("账号配置和系统凭据库密钥已删除。");
+    Ok(())
+}
+
 fn list_accounts(repository: &AccountRepository<OsKeyStore>) -> Result<()> {
     let profile_ids = repository.list_profile_ids()?;
     if profile_ids.is_empty() {
@@ -385,6 +443,11 @@ fn prompt_line(prompt: &str) -> Result<String> {
     Ok(value.trim_end_matches(['\r', '\n']).to_owned())
 }
 
+fn optional_prompt_line(prompt: &str) -> Result<Option<String>> {
+    let value = prompt_line(prompt)?;
+    Ok((!value.is_empty()).then_some(value))
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -396,6 +459,24 @@ mod tests {
         assert!(Cli::try_parse_from(["RMail", "config", "add"]).is_ok());
         assert!(Cli::try_parse_from(["RMail", "config", "list"]).is_ok());
         assert!(Cli::try_parse_from(["RMail", "config", "show"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "RMail",
+                "config",
+                "update",
+                "94450d7f-6a4a-4cf4-b562-ae567104c425"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "RMail",
+                "config",
+                "delete",
+                "94450d7f-6a4a-4cf4-b562-ae567104c425"
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "RMail",
