@@ -18,6 +18,12 @@ pub enum RMailError {
     #[error("选项无效：{0}")]
     InvalidChoice(&'static str),
 
+    #[error("邮件内容无效：{0}")]
+    InvalidMessage(&'static str),
+
+    #[error("邮件协议操作失败：{0}")]
+    Protocol(&'static str),
+
     #[error("无法确定系统数据目录，请使用 --data-dir 指定目录")]
     DataDirectoryUnavailable,
 

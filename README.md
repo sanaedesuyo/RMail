@@ -9,6 +9,8 @@ cargo run -- config add
 cargo run -- config list
 cargo run -- config show [配置ID]
 cargo run -- config path
+cargo run -- send --account <配置ID> --to <收件人> --subject <主题> --text-file <正文文件>
+cargo run -- receive --account <配置ID> --protocol imap
 ```
 
 `config add` 会执行以下流程：
@@ -40,6 +42,20 @@ RMail/
 - Linux：Secret Service
 
 若系统安全凭据库不可用，RMail 会明确报错，不会降级为明文或把密钥写到配置目录。`config list` 和 `config show` 会在内存中解密配置，但绝不向终端显示密码。
+
+## SMTP 发送与 IMAP/POP3 接收
+
+发送使用账号配置中的 SMTP Submission 服务器。`--smtp-server`、`--smtp-port` 和 `--smtp-security` 可在单次操作中覆盖该设置；它们用于指定**中继服务器**，收件服务器由收件人地址的域名和 SMTP 路由决定。支持 TLS 或 STARTTLS，绝不会回退到明文认证或跳过证书校验。
+
+```text
+cargo run -- send --account <配置ID> --to bob@example.com --cc team@example.com \
+  --subject "进度" --text-file body.txt --attachment report.pdf
+
+cargo run -- receive --account <配置ID> --protocol imap --mailbox INBOX --limit 20
+cargo run -- receive --account <配置ID> --protocol pop3 --server pop.example.com --security tls --full
+```
+
+`send` 支持 To、Cc、Bcc、Reply-To、线程 ID、纯文本/HTML 正文和每个最多 25 MiB 的附件。正文仅接受文件输入，避免把邮件内容放进 shell 历史。接收默认只获取邮件头；`--full` 才会在内存中读取正文与附件。当前版本不会把邮件正文或附件持久化，并且 POP3 从不发出删除邮件的命令。
 
 ## 质量检查
 
