@@ -87,6 +87,18 @@ impl<'a, K: KeyStore> MailService<'a, K> {
             }
         }
     }
+
+    pub fn remote_mailboxes(
+        &self,
+        profile: &str,
+        override_server: ServerOverride,
+    ) -> Result<Vec<String>> {
+        let account = self.repository.load(profile)?;
+        imap::list_mailboxes(
+            &account,
+            &resolve_server(account.incoming(), override_server)?,
+        )
+    }
 }
 
 fn resolve_server(default: &MailServer, override_server: ServerOverride) -> Result<MailServer> {

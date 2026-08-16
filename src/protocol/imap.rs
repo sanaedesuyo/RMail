@@ -94,6 +94,32 @@ pub fn receive(
     Ok(messages)
 }
 
+pub fn list_mailboxes(account: &AccountConfig, server: &MailServer) -> Result<Vec<String>> {
+    let tls = TlsConnector::builder()
+        .build()
+        .map_err(|_| RMailError::Protocol("无法配置 IMAP TLS"))?;
+    let client = match server.security {
+        TransportSecurity::Tls => {
+            imap::connect((server.host.as_str(), server.port), &server.host, &tls)
+        }
+        TransportSecurity::StartTls => {
+            imap::connect_starttls((server.host.as_str(), server.port), &server.host, &tls)
+        }
+    }
+    .map_err(|_| RMailError::Protocol("无法建立受 TLS 保护的 IMAP 连接"))?;
+    let mut session = client
+        .login(&account.email, &account.password)
+        .map_err(|_| RMailError::Protocol("IMAP 认证失败"))?;
+    let names = session
+        .list(None, Some("*"))
+        .map_err(|_| RMailError::Protocol("无法列出 IMAP 邮箱"))?;
+    let result = names.iter().map(|name| name.name().to_owned()).collect();
+    session
+        .logout()
+        .map_err(|_| RMailError::Protocol("无法正常关闭 IMAP 会话"))?;
+    Ok(result)
+}
+
 fn validate_request(request: &ImapReceiveRequest) -> Result<()> {
     if request.limit == 0 || request.limit > MAX_RECEIVE_LIMIT {
         return Err(RMailError::InvalidMessage(

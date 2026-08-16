@@ -135,6 +135,7 @@ pub fn parse_message(
         size: Some(raw.len().try_into().unwrap_or(u32::MAX)),
         flags: Vec::new(),
         content,
+        raw: Zeroizing::new(raw.to_vec()),
     })
 }
 

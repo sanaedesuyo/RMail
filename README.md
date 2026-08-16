@@ -64,7 +64,21 @@ cargo run -- receive --account <配置ID> --protocol imap --mailbox INBOX --limi
 cargo run -- receive --account <配置ID> --protocol pop3 --server pop.example.com --security tls --full
 ```
 
-`send` 支持 To、Cc、Bcc、Reply-To、线程 ID、纯文本/HTML 正文和每个最多 25 MiB 的附件。正文仅接受文件输入，避免把邮件内容放进 shell 历史。接收默认只获取邮件头；`--full` 才会在内存中读取正文与附件。当前版本不会把邮件正文或附件持久化，并且 POP3 从不发出删除邮件的命令。
+`send` 支持 To、Cc、Bcc、Reply-To、线程 ID、纯文本/HTML 正文和每个最多 25 MiB 的附件。正文仅接受文件输入，避免把邮件内容放进 shell 历史。接收默认只获取邮件头；`--full` 才会读取正文与附件。POP3 从不发出服务器端删除邮件的命令。
+
+## 本地邮件管理
+
+接收的邮件会加密保存到对应账户的实际邮件箱；IMAP 同时从服务器拉取邮箱目录，POP3 仅创建 `INBOX`。`新邮件`、`已发送`、`回收站`与`星标邮件`是跨账户逻辑引用视图，不复制或明文保存邮件数据。
+
+```text
+cargo run -- mail list --local new
+cargo run -- mail list --account <配置ID> --mailbox INBOX
+cargo run -- mail delete --account <配置ID> <邮件ID>
+cargo run -- mail restore --account <配置ID> <邮件ID>
+cargo run -- mail purge --account <配置ID> <邮件ID> --confirm <邮件ID>
+```
+
+发送成功的邮件会写入账户实际 `Sent` 邮件箱，并出现在本地“已发送”视图。删除只移动本地加密邮件至回收站；接收、发送或任何邮件管理操作时，已在回收站超过 30 天的邮件会自动永久删除。`mail purge` 可在 30 天前手动永久删除，且必须再次提供相同邮件 ID。
 
 ## 质量检查
 

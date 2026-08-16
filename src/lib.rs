@@ -8,6 +8,7 @@ pub mod key_store;
 pub mod logging;
 pub mod mail;
 pub mod mail_service;
+pub mod mail_store;
 pub mod protocol;
 pub mod server;
 pub mod service;

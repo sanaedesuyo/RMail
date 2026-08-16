@@ -9,6 +9,7 @@ use crate::key_store::OsKeyStore;
 use crate::logging::{LogLevel, Logger};
 use crate::mail::{Attachment, EmailAddress, EmailDraft, MessagePriority};
 use crate::mail_service::{MailService, ReceiveProtocol, ServerOverride};
+use crate::mail_store::{LocalMailbox, MailStore};
 use crate::server::{DiscoveredServers, discover};
 use crate::service::AccountService;
 use crate::storage::{AccountRepository, DataPaths};
@@ -33,6 +34,8 @@ pub enum Command {
     Send(Box<SendArgs>),
     /// 从 IMAP 或 POP3 邮箱接收邮件；默认仅下载邮件头。
     Receive(ReceiveArgs),
+    /// 管理本地加密保存的邮件。
+    Mail(MailArgs),
 }
 
 #[derive(Debug, Args)]
@@ -90,6 +93,61 @@ pub struct ReceiveArgs {
     /// 下载正文和附件到内存；不会将其持久化。
     #[arg(long)]
     pub full: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct MailArgs {
+    #[command(subcommand)]
+    pub action: MailAction,
+}
+#[derive(Debug, Subcommand)]
+pub enum MailAction {
+    /// 列出账户邮件或本地逻辑邮箱。
+    List {
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        mailbox: Option<String>,
+        #[arg(long, value_enum)]
+        local: Option<LocalMailboxArg>,
+    },
+    /// 将邮件移入本地回收站。
+    Delete {
+        #[arg(long)]
+        account: String,
+        message_id: String,
+    },
+    /// 从本地回收站恢复邮件至原邮件箱。
+    Restore {
+        #[arg(long)]
+        account: String,
+        message_id: String,
+    },
+    /// 立即永久删除回收站中的邮件；必须提供相同邮件 ID 再次确认。
+    Purge {
+        #[arg(long)]
+        account: String,
+        message_id: String,
+        #[arg(long)]
+        confirm: String,
+    },
+}
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum LocalMailboxArg {
+    New,
+    Sent,
+    Trash,
+    Starred,
+}
+impl From<LocalMailboxArg> for LocalMailbox {
+    fn from(value: LocalMailboxArg) -> Self {
+        match value {
+            LocalMailboxArg::New => Self::New,
+            LocalMailboxArg::Sent => Self::Sent,
+            LocalMailboxArg::Trash => Self::Trash,
+            LocalMailboxArg::Starred => Self::Starred,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -180,6 +238,7 @@ pub fn run(cli: Cli) -> Result<()> {
         },
         Command::Send(args) => send_mail(&repository, *args),
         Command::Receive(args) => receive_mail(&repository, args),
+        Command::Mail(args) => manage_mail(&repository, args),
     };
     let log_result = logger.record(
         if outcome.is_ok() {
@@ -242,39 +301,102 @@ fn send_mail(repository: &AccountRepository<OsKeyStore>, args: SendArgs) -> Resu
         },
         &draft,
     )?;
+    MailStore::new(repository.paths().clone(), OsKeyStore).save_sent(
+        &args.account,
+        crate::mail::mime::build_message(&draft)?.formatted(),
+    )?;
     println!("邮件已由 SMTP 服务器接受。");
     Ok(())
 }
 
 fn receive_mail(repository: &AccountRepository<OsKeyStore>, args: ReceiveArgs) -> Result<()> {
-    let messages = MailService::new(repository).receive(
+    let override_server = ServerOverride {
+        host: args.server,
+        port: args.port,
+        security: args.security.map(Into::into),
+    };
+    let service = MailService::new(repository);
+    let mailbox = args.mailbox.clone();
+    let messages = service.receive(
         &args.account,
         args.protocol.into(),
-        ServerOverride {
-            host: args.server,
-            port: args.port,
-            security: args.security.map(Into::into),
-        },
-        args.mailbox,
+        override_server.clone(),
+        mailbox.clone(),
         args.limit,
         args.full,
     )?;
+    let store = MailStore::new(repository.paths().clone(), OsKeyStore);
+    if matches!(args.protocol, ReceiveProtocolArg::Imap) {
+        store.sync_mailboxes(
+            &args.account,
+            service.remote_mailboxes(&args.account, override_server)?,
+        )?;
+    } else {
+        store.sync_mailboxes(&args.account, ["INBOX".into()])?;
+    }
+    store.save_received(&args.account, &mailbox, messages)?;
+    let messages = store.list_account(&args.account, Some(&mailbox))?;
     for message in messages {
         println!(
-            "来源：{:?}\n主题：{}\n发件人：{}\n大小：{}\n",
-            message.source,
-            message.envelope.subject.unwrap_or_default(),
-            message
-                .envelope
-                .from
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            message.size.unwrap_or_default()
+            "邮件 ID：{}\n邮件箱：{}\n未读：{}\n星标：{}\n",
+            message.message_id, message.mailbox, message.unread, message.starred
         );
     }
     Ok(())
+}
+
+fn manage_mail(repository: &AccountRepository<OsKeyStore>, args: MailArgs) -> Result<()> {
+    let store = MailStore::new(repository.paths().clone(), OsKeyStore);
+    match args.action {
+        MailAction::List {
+            account,
+            mailbox,
+            local,
+        } => {
+            let messages = match (account, local) {
+                (Some(account), None) => store.list_account(&account, mailbox.as_deref())?,
+                (None, Some(local)) => {
+                    store.list_local(&repository.list_profile_ids()?, local.into())?
+                }
+                _ => {
+                    return Err(RMailError::InvalidChoice(
+                        "请指定 --account，或指定一个 --local 邮件箱",
+                    ));
+                }
+            };
+            for message in messages {
+                println!(
+                    "{}  {}  {}  未读:{}  星标:{}",
+                    message.account_id,
+                    message.message_id,
+                    message.mailbox,
+                    message.unread,
+                    message.starred
+                );
+            }
+            Ok(())
+        }
+        MailAction::Delete {
+            account,
+            message_id,
+        } => store.delete(&account, &message_id),
+        MailAction::Restore {
+            account,
+            message_id,
+        } => store.restore(&account, &message_id),
+        MailAction::Purge {
+            account,
+            message_id,
+            confirm,
+        } => {
+            if confirm != message_id {
+                return Err(RMailError::InvalidChoice(
+                    "确认邮件 ID 不匹配，已取消永久删除",
+                ));
+            }
+            store.purge(&account, &message_id)
+        }
+    }
 }
 
 fn parse_addresses(values: Vec<String>) -> Result<Vec<EmailAddress>> {
@@ -555,6 +677,35 @@ mod tests {
                 "--server",
                 "pop.example.com",
                 "--full"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn parses_mail_management_commands() {
+        assert!(Cli::try_parse_from(["RMail", "mail", "list", "--local", "new"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "RMail",
+                "mail",
+                "delete",
+                "--account",
+                "94450d7f-6a4a-4cf4-b562-ae567104c425",
+                "message-id"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "RMail",
+                "mail",
+                "purge",
+                "--account",
+                "94450d7f-6a4a-4cf4-b562-ae567104c425",
+                "message-id",
+                "--confirm",
+                "message-id"
             ])
             .is_ok()
         );

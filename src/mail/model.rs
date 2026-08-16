@@ -224,6 +224,7 @@ pub struct ReceivedMessage {
     pub size: Option<u32>,
     pub flags: Vec<String>,
     pub content: Option<MessageContent>,
+    pub(crate) raw: Zeroizing<Vec<u8>>,
 }
 
 fn contains_line_break(value: &str) -> bool {
