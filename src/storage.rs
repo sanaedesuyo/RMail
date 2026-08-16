@@ -69,6 +69,7 @@ pub struct DataPaths {
     pub accounts: PathBuf,
     pub mail: PathBuf,
     pub preferences: PathBuf,
+    pub logs: PathBuf,
 }
 
 impl DataPaths {
@@ -83,12 +84,19 @@ impl DataPaths {
             accounts: root.join("accounts"),
             mail: root.join("mail"),
             preferences: root.join("preferences"),
+            logs: root.join("logs"),
             root,
         }
     }
 
     pub fn ensure(&self) -> Result<()> {
-        for directory in [&self.root, &self.accounts, &self.mail, &self.preferences] {
+        for directory in [
+            &self.root,
+            &self.accounts,
+            &self.mail,
+            &self.preferences,
+            &self.logs,
+        ] {
             fs::create_dir_all(directory).map_err(|source| RMailError::Io {
                 action: "创建数据目录",
                 path: directory.clone(),
@@ -403,6 +411,7 @@ mod tests {
         assert!(paths.accounts.is_dir());
         assert!(paths.mail.is_dir());
         assert!(paths.preferences.is_dir());
+        assert!(paths.logs.is_dir());
 
         let encrypted = fs::read_to_string(paths.account_file(&profile_id).expect("path"))
             .expect("read encrypted envelope");

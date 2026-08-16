@@ -6,6 +6,7 @@ use zeroize::Zeroizing;
 
 use crate::account::{DiscoveryMethod, MailServer, TransportSecurity};
 use crate::key_store::OsKeyStore;
+use crate::logging::{LogLevel, Logger};
 use crate::mail::{Attachment, EmailAddress, EmailDraft, MessagePriority};
 use crate::mail_service::{MailService, ReceiveProtocol, ServerOverride};
 use crate::server::{DiscoveredServers, discover};
@@ -149,6 +150,11 @@ pub enum ConfigAction {
     },
     /// 显示模块化数据根目录。
     Path,
+    /// 设置日志最多保留的条目数（默认 1000）。
+    LogLimit {
+        /// 1 到 100000；达到上限时淘汰最旧日志。
+        max_entries: usize,
+    },
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -156,9 +162,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(root) => DataPaths::from_root(root),
         None => DataPaths::system_default()?,
     };
+    let logger = Logger::new(paths.clone(), OsKeyStore);
     let repository = AccountRepository::new(paths, OsKeyStore);
 
-    match cli.command {
+    let outcome = match cli.command {
         Command::Config(config) => match config.action {
             ConfigAction::Add => add_account(&repository),
             ConfigAction::Update { profile_id } => update_account(&repository, &profile_id),
@@ -169,10 +176,37 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("{}", repository.paths().root.display());
                 Ok(())
             }
+            ConfigAction::LogLimit { max_entries } => set_log_limit(&logger, max_entries),
         },
         Command::Send(args) => send_mail(&repository, *args),
         Command::Receive(args) => receive_mail(&repository, args),
+    };
+    let log_result = logger.record(
+        if outcome.is_ok() {
+            LogLevel::Info
+        } else {
+            LogLevel::Error
+        },
+        if outcome.is_ok() {
+            "cli.command_completed"
+        } else {
+            "cli.command_failed"
+        },
+    );
+    match (outcome, log_result) {
+        (Ok(()), Err(error)) => Err(error),
+        (result, _) => result,
     }
+}
+
+fn set_log_limit(logger: &Logger<OsKeyStore>, max_entries: usize) -> Result<()> {
+    logger.set_max_entries(max_entries)?;
+    let log_path = logger.log_path();
+    println!(
+        "日志条目上限已设置为 {max_entries}。日志目录：{}",
+        log_path.parent().unwrap_or(&log_path).display()
+    );
+    Ok(())
 }
 
 fn send_mail(repository: &AccountRepository<OsKeyStore>, args: SendArgs) -> Result<()> {
@@ -459,6 +493,7 @@ mod tests {
         assert!(Cli::try_parse_from(["RMail", "config", "add"]).is_ok());
         assert!(Cli::try_parse_from(["RMail", "config", "list"]).is_ok());
         assert!(Cli::try_parse_from(["RMail", "config", "show"]).is_ok());
+        assert!(Cli::try_parse_from(["RMail", "config", "log-limit", "500"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "RMail",
