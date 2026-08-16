@@ -5,6 +5,7 @@ pub mod cli;
 pub mod crypto;
 pub mod error;
 pub mod key_store;
+pub mod logging;
 pub mod mail;
 pub mod mail_service;
 pub mod protocol;

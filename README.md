@@ -8,6 +8,7 @@ RMail 是一个以安全、跨平台和简洁体验为目标的邮件客户端�
 cargo run -- config add
 cargo run -- config update <配置ID>
 cargo run -- config delete <配置ID>
+cargo run -- config log-limit <数量>
 cargo run -- config list
 cargo run -- config show [配置ID]
 cargo run -- config path
@@ -46,6 +47,10 @@ RMail/
 若系统安全凭据库不可用，RMail 会明确报错，不会降级为明文或把密钥写到配置目录。`config list` 和 `config show` 会在内存中解密配置，但绝不向终端显示密码。
 
 `config update <配置ID>` 以交互式方式更新邮箱地址、密码或 IMAP/SMTP 服务器，未填写的字段保持原值，并使用原系统密钥重新加密配置。`config delete <配置ID>` 会要求再次输入完整配置 ID；确认后删除加密账号文件及其操作系统凭据库密钥。
+
+## 日志
+
+日志写入数据目录的 `logs/rmail.log`，仅包含时间戳、等级和受限的内部事件代码；不会记录账号、服务器、邮件内容、路径、凭据或令牌。默认保留最新 1000 条，达到上限时淘汰最旧条目。通过 `config log-limit <1-100000>` 调整上限；该偏好保存在经系统凭据库密钥加密的 `preferences/logging.toml` 中。
 
 ## SMTP 发送与 IMAP/POP3 接收
 
